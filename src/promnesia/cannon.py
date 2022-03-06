@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Experimental libarary for normalising domain names and urls to achieve 'canonical' urls for content.
-E.g. 
+E.g.
  https://mobile.twitter.com/demarionunn/status/928409560548769792
 and
  https://twitter.com/demarionunn/status/928409560548769792
@@ -17,7 +17,7 @@ import typing
 from typing import Iterable, NamedTuple, Set, Optional, List, Sequence, Union, Tuple, Dict, Any, Collection
 
 import urllib.parse
-from urllib.parse import urlsplit, parse_qsl, urlunsplit, parse_qs, urlencode, SplitResult
+from urllib.parse import urlsplit, parse_qsl, urlunsplit, urlencode, SplitResult
 
 
 # this has some benchmark, but quite a few librarires seem unmaintained, sadly
@@ -367,9 +367,27 @@ def handle_archive_org(url: str) -> Optional[str]:
         return m.group('rest')
 
 
+import pkgutil
+import importlib
+import promnesia.normalizers
+from promnesia.normalizers.Site import Site
+
+for finder, name, ispkg in pkgutil.iter_modules(
+        promnesia.normalizers.__path__, promnesia.normalizers.__name__ + '.'):
+    importlib.import_module(name)
+
+
+def canonify(url: str) -> str:
+    for site in Site.__subclasses__():
+        if site.supports(url):
+            return site.canonify(url)
+    else:
+        return old_canonify(url)
+
+
 # TODO ok, I suppose even though we can't distinguish + and space, likelihood of them overlapping in normalised url is so low, that it doesn't matter much
 # TODO actually, might be easier for most special charaters
-def canonify(url: str) -> str:
+def old_canonify(url: str) -> str:
     # TODO check for invalid charaters?
     url = _prenormalise(url)
 

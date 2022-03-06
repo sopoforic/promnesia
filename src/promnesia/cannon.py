@@ -342,31 +342,6 @@ def myunsplit(domain: str, path: str, query: str, fragment: str) -> str:
     uns = try_cutl('//', uns)  # // due to dummy protocol
     return uns
 
-
-
-#
-# r'web.archive.org/web/\d+/
-# def canonify_simple(url: str) -> Optional[str]:
-#     '''
-#     Experiment with simply using regexes for normalising, as close to regular python as it gets
-#     '''
-#     # - using named groups for comments?
-
-#     # TODO to be fair, archive.org is a 'very' special case..
-#     regexes = [
-#         r'web.archive.org/web/(?<timestamp>\d+)/' # TODO what about 'rest'?
-#     ]
-#     for re in regexes:
-
-def handle_archive_org(url: str) -> Optional[str]:
-    are = r'web.archive.org/web/(?P<timestamp>\d+)/(?P<rest>.*)'
-    m = re.fullmatch(are, url)
-    if m is None:
-        return None
-    else:
-        return m.group('rest')
-
-
 import pkgutil
 import importlib
 import promnesia.normalizers
@@ -409,11 +384,6 @@ def old_canonify(url: str) -> str:
 
     # meh. figure out what's up with transform_split
     no_protocol = parts.netloc + parts.path + parts.query + parts.fragment
-
-    res = handle_archive_org(no_protocol)
-    if res is not None:
-        assert len(res) < len(no_protocol) # just a paranoia to avoid infinite recursion...
-        return canonify(res)
 
     domain, path, qq, _frag = transform_split(parts)
 

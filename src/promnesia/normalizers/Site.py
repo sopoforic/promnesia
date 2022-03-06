@@ -3,4 +3,5 @@ class Site:
         raise NotImplementedError
 
     def canonify(url):
-        return canonify(url)
+        from promnesia.cannon import old_canonify
+        return old_canonify(url)

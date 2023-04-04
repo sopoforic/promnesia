@@ -3,7 +3,9 @@ from itertools import chain
 
 from setuptools import setup, find_namespace_packages # type: ignore
 
+
 def main() -> None:
+    # works with both ordinary and namespace packages
     pkgs = find_namespace_packages('src')
     pkg = min(pkgs)
     setup(
@@ -16,10 +18,13 @@ def main() -> None:
         # some CERTIFICATE_VERIFY_FAILED stuff. comment this temporary if you're debugging
         setup_requires=['setuptools_scm'],
 
+        # otherwise mypy won't work
+        # https://mypy.readthedocs.io/en/stable/installed_packages.html#making-pep-561-compatible-packages
         zip_safe=False,
 
         packages=pkgs, # TODO ugh. that's weird. it worked as only ['promnesia'] when installing via PIP ... but not with dev install???
         package_dir={'': 'src'},
+        # necessary so that package works with mypy
         package_data={pkg: ['py.typed']},
 
         url='https://github.com/karlicoss/promnesia',
@@ -42,6 +47,7 @@ def main() -> None:
         extras_require={
             'testing': [
                  'pytest',
+                 'pytest-timeout',
                  'pytest-xdist', # why??
 
                  'psutil',
@@ -72,7 +78,8 @@ DEPS_INDEXER = [
 ]
 
 DEPS_SERVER = [
-    'hug',
+    'fastapi',
+    'uvicorn[standard]',
 ]
 
 DEPS_SOURCES = {
@@ -99,7 +106,7 @@ DEPS_SOURCES = {
         'orgparse>=0.3.0',
     ],
     ('telegram', 'dependencies for sources.telegram'): [
-        'dataset',
+        # used to depend on 'dataset', keeping for backwards compatibility
     ],
 }
 

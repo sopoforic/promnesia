@@ -65,6 +65,8 @@ CODE = {
     'text/x-objective-c',
     'text/x-lisp',
     'text/vnd.graphviz',
+    'text/x-diff',  # patch files
+    'text/x-php',
 
     # these didn't have a mime type, or were mistyped?
     'css',
@@ -74,7 +76,10 @@ CODE = {
     'hs',  # mistyped on osx
     'hpp', # mistyped on osx
 
+    'edn', # clojure data
+
     '.ts', # most likely typescript.. otherwise determined as text/vnd.trolltech.linguist mime
+    '.js',
 }
 # TODO discover more extensions with mimetypes library?
 

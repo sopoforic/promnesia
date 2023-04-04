@@ -1,11 +1,6 @@
 /* @flow */
 import {getBrowser} from './common'
 
-// $FlowFixMe
-import OptionsSync from 'webext-options-sync';
-
-
-
 /* NOTE: options can only be renamed in-between store releases */
 /* maybe later will bother with migrations for consistent naming, but that would require tests first */
 
@@ -90,7 +85,7 @@ export const USE_ORIGINAL_TZ = true;
 export const GROUP_CONSECUTIVE_SECONDS = 20 * 60;
 
 // TODO: make it configurable in options?
-export const THIS_BROWSER_TAG = getBrowser()
+export const THIS_BROWSER_TAG: string = getBrowser()
 
 // TODO allow to export settings
 // https://github.com/fregante/webext-options-sync/issues/23
@@ -143,8 +138,60 @@ function defaultOptions(): StoredOptions {
         position_css: `
 /* you can use devtools to find other CSS attributes you can tweak */
 
+/* Tweak colors */
+
+/* Common used colors, you are welcome to customize them! */
+/*
+.promnesia {
+    --opacity: 1;
+    --main: rgba(255, 254, 252, var(--opacity));
+    --secondary: #e8eef0;
+    --thirdly: #f3f4f6;
+    --borders: #dddddd;
+    --text: #222222;
+    --text-secondary: #999999;
+    --accent: 178, 102, 40;
+    --accent-secondary: #2aa198;
+}
+*/
+
+/* Styling of main elements. Mostly you don't need to customize it */
+/*
+.promnesia {
+    --header-bg: var(--secondary);
+    --source-text: rgb(var(--accent));
+    --count-text: var(--thirdly);
+    --visits-item-bg: var(--thirdly);
+    --visits-item-border: var(--borders);
+    --locator-text: var(--accent-secondary);
+    --timestamp-text: var(--text-secondary);
+    --date-bg: var(--main);
+    --date-color: var(--text);
+}
+*/
+
+/* Custom fonts */
+/*
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;600&family=PT+Serif:ital,wght@0,400;0,700;1,400;1,700&display=swap');
+.promnesia {
+    font-family: "PT Serif", serif;
+    font-size: 1em;
+}
+*/
+
+
+/* shadows example */
+/*
+#promnesia-sidebar-filters {
+    text-transform: capitalize;
+    background: linear-gradient(to bottom, var(--thirdly) 0%, var(--main) 100%);
+}
+*/
+
+
 /* tweak sidebar position/size/style */
-#promnesia-sidebar {
+#promnesia-frame {
+
     /* you can also use
        --left/--top/--bottom
        to change the sidebar position */
@@ -154,14 +201,7 @@ function defaultOptions(): StoredOptions {
 
     /* you can also use any other valid CSS
        easiest is to experiment in devtools first */
-    background-color: rgba(236, 236, 236, 0.8);
 }
-
-/* tweak elements within the sidebar */
-#promnesia-sidebar .src {
-    font-weight: bold;
-}
-
 
 /* tweak 'visited' marks: specify hex color here */
 :root {
@@ -209,20 +249,19 @@ function defaultOptions(): StoredOptions {
 }
 
 
-// TODO mm. don't really like having global object, but seems that it's easiest way to avoid race conditions
-// TODO https://github.com/fregante/webext-options-sync/issues/38 -- fixed now
-const _options = new OptionsSync({
-    defaults: defaultOptions(),
-});
-
-
-function optSync() {
-    return _options;
+async function optSync() {
+    // uhh.. for some reason await import here works with jest
+    // whereas static import on top of file doesn't??
+    // $FlowFixMe
+    const {default: OptionsSync} = await import('webext-options-sync')
+    return new OptionsSync({
+        defaults: defaultOptions(),
+    })
 }
 
 // gets the actual raw values that user set, just for the options page
 export async function getStoredOptions(): Promise<StoredOptions> {
-    const r = await optSync().getAll()
+    const r = await (await optSync()).getAll()
     let smap = r.src_map
     if (typeof smap !== 'string') {
         // old format, we used to keep as a map
@@ -247,21 +286,22 @@ export async function getOptions(): Promise<Options> {
 
 // TODO would be nice to accept a substructure of Options??
 export async function setOptions(opts: StoredOptions) {
-    const os = optSync()
+    const os = await optSync()
     await os.set(opts)
 }
 
-export async function setOption(opt: Opt1 | Opt2) {
-    const os = optSync()
+export async function setOption(opt: Opt1 | Opt2): Promise<void> {
+    const os = await optSync()
     await os.set(opt)
 }
 
-export async function resetOptions() {
-    const os = optSync()
+export async function resetOptions(): Promise<void> {
+    const os = await optSync()
     await os.setAll({})
 }
 
-function toggleOption(toggle: (StoredOptions) => void): () => Promise<void> {
+type ToggleOptionRes = () => Promise<void>
+function toggleOption(toggle: (StoredOptions) => void): ToggleOptionRes {
     return async () => {
         const opts = await getStoredOptions()
         toggle(opts)
@@ -270,9 +310,9 @@ function toggleOption(toggle: (StoredOptions) => void): () => Promise<void> {
 }
 
 export const Toggles = {
-    showSidebar   : toggleOption((opts) => { opts.sidebar_always_show = !opts.sidebar_always_show; }),
-    markVisited   : toggleOption((opts) => { opts.mark_visited_always = !opts.mark_visited_always; }),
-    showHighlights: toggleOption((opts) => { opts.highlight_on        = !opts.highlight_on       ; }),
+    showSidebar   : (toggleOption((opts) => { opts.sidebar_always_show = !opts.sidebar_always_show; }): ToggleOptionRes),
+    markVisited   : (toggleOption((opts) => { opts.mark_visited_always = !opts.mark_visited_always; }): ToggleOptionRes),
+    showHighlights: (toggleOption((opts) => { opts.highlight_on        = !opts.highlight_on       ; }): ToggleOptionRes),
 }
 
 // TODO try optionsStorage.syncForm?

@@ -98,6 +98,8 @@ async function* _doSearch(
             locator       : v.locator,
             relative      : false,
         });
+        // hmm flow seems a bit dumb here
+        // $FlowFixMe[not-a-function]
         if (highlight_if(v)) {
             cc.classList.add('highlight');
         }
@@ -115,6 +117,7 @@ function showOrAlert(err: Error): void {
     }
 }
 
+// $FlowFixMe[missing-local-annot]
 async function doSearch(...args) {
     const dom_updates = _doSearch(...args)
     async function consume_one() {
@@ -141,6 +144,9 @@ async function doSearch(...args) {
 
 unwrap(doc.getElementById('search_id')).addEventListener('submit', async (event: Event) => {
     event.preventDefault();
+    const url = new URL(window.location)
+    url.searchParams.set('q', getQuery().value)
+    window.history.pushState({}, '', url)
     // TODO make ctx first configurable?
     await doSearch(
         allsources.search(getQuery().value),
@@ -162,6 +168,19 @@ window.onload = async () => {
         return
     }
 
+    const q_param = params['q']
+    if (q_param != null) {
+        getQuery().value = q_param
+        await doSearch(
+            allsources.search(getQuery().value),
+            {
+                with_ctx_first: true,
+                highlight_if: null,
+            },
+        )
+        return
+    }
+
     // todo need to be better tested, with various timezones etc
     const ts_param = params['utc_timestamp_s']
     if (ts_param != null) {
@@ -174,6 +193,7 @@ window.onload = async () => {
                 highlight_if: (v: Visit) => Math.floor(v.time.getTime() / 1000) == timestamp,
             },
         )
+        return
     }
     // TODO otherwise, error??
 };

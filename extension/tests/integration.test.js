@@ -1,3 +1,10 @@
+/*
+ * Ugh FFS.
+ * NODE_OPTIONS=--experimental-vm-modules npm run test is working much better with ES6 imports/node dependenceis
+ * but it segfaults every other time
+ * https://github.com/nodejs/node/issues/35889
+ */
+
 import {setOptions, getOptions} from '../src/options'
 
 global.chrome = {
@@ -13,9 +20,15 @@ global.chrome = {
     },
     runtime: {
         lastError: null,
-        getPlatformInfo: (res) => { res({}) },
         getManifest    : () => { return {version: 'whatever'} },
-    }
+    },
+}
+
+global.browser = {
+    runtime: {
+        lastError: null,
+        getPlatformInfo: async () => {},
+    },
 }
 
 
@@ -46,17 +59,17 @@ import {allsources} from '../src/sources'
 
 
 // meh.
-global.chrome.history = {
-    getVisits: (obj, res) => res([]),
-    search   : (obj, res) => res([]),
+global.browser.history = {
+    getVisits: async (obj) => [],
+    search   : async (obj) => [],
 }
-global.chrome.bookmarks = {
-    getTree: (res) => res([{
+global.browser.bookmarks = {
+    getTree: async () => [{
         children: [{
             url: 'http://whatever.com/',
             dateAdded: 16 * 10 ** 8 * 1000,
         }],
-    }]),
+    }],
 }
 
 test('visits_allsources', async() => {
@@ -77,8 +90,8 @@ import {MultiSource, bookmarks, thisbrowser} from '../src/sources'
 
 test('search_defensive', async() => {
     // precondition: some error in processing history api, e.g. it's unavailable or something
-    global.chrome.history.search    = (q, res) => res(null)
-    global.chrome.bookmarks.getTree = (res)    => res(null)
+    global.browser.history.search    = async (q) => null
+    global.browser.bookmarks.getTree = async () => null
 
     // TODO wtf?? for some reason default order (backend, browser, bookmarks) causes
     // 'Promise rejection was handled asynchronously'

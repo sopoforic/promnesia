@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 '''
-Default logger is a bit, see 'test'/run this file for a demo
+Default logger is a bit meh, see 'test'/run this file for a demo
 '''
 
 def test() -> None:
     import logging
     import sys
     from typing import Callable
-    M: Callable[[str], None]  = lambda s: print(s, file=sys.stderr)
+
+    M: Callable[[str], None] = lambda s: print(s, file=sys.stderr)
 
     M("   Logging module's defaults are not great...'")
     l = logging.getLogger('test_logger')
@@ -20,7 +21,7 @@ def test() -> None:
     M("")
     M("    With LazyLogger you get a reasonable logging format, colours and other neat things")
 
-    ll = LazyLogger('test') # No need for basicConfig!
+    ll = LazyLogger('test')  # No need for basicConfig!
     ll.info("default level is INFO")
     ll.debug(".. so this shouldn't be displayed")
     ll.warning("warnings are easy to spot!")
@@ -37,10 +38,10 @@ LevelIsh = Optional[Union[Level, str]]
 
 
 def mklevel(level: LevelIsh) -> Level:
-    # todo do the same for Promnesia?
-    # glevel = os.environ.get('HPI_LOGS', None)
-    # if glevel is not None:
-    #     level = glevel
+    # todo put in some global file, like envvars.py
+    glevel = os.environ.get('PROMNESIA_LOGS', None)
+    if glevel is not None:
+        level = glevel
     if level is None:
         return logging.NOTSET
     if isinstance(level, int):
@@ -53,7 +54,6 @@ FORMAT_COLOR   = FORMAT.format(start='%(color)s', end='%(end_color)s')
 FORMAT_NOCOLOR = FORMAT.format(start='', end='')
 DATEFMT = '%Y-%m-%d %H:%M:%S'
 
-# NOTE: this is a bit experimental and temporary..
 COLLAPSE_DEBUG_LOGS = os.environ.get('COLLAPSE_DEBUG_LOGS', False)
 
 _init_done = 'lazylogger_init_done'
@@ -61,7 +61,7 @@ _init_done = 'lazylogger_init_done'
 def setup_logger(logger: logging.Logger, level: LevelIsh) -> None:
     lvl = mklevel(level)
     try:
-        import logzero # type: ignore[import]
+        import logzero  # type: ignore[import]
         formatter = logzero.LogFormatter(
             fmt=FORMAT_COLOR,
             datefmt=DATEFMT,
@@ -72,6 +72,7 @@ def setup_logger(logger: logging.Logger, level: LevelIsh) -> None:
         formatter = logging.Formatter(fmt=FORMAT_NOCOLOR, datefmt=DATEFMT)
         use_logzero = False
 
+    logger.addFilter(AddExceptionTraceback())
     if use_logzero and not COLLAPSE_DEBUG_LOGS: # all set, nothing to do
         # 'simple' setup
         logzero.setup_logger(logger.name, level=lvl, formatter=formatter)
@@ -82,7 +83,7 @@ def setup_logger(logger: logging.Logger, level: LevelIsh) -> None:
     h.setLevel(lvl)
     h.setFormatter(formatter)
     logger.addHandler(h)
-    logger.propagate = False # ugh. otherwise it duplicates log messages
+    logger.propagate = False  # ugh. otherwise it duplicates log messages? not sure about it..
 
 
 class LazyLogger(logging.Logger):
@@ -91,7 +92,7 @@ class LazyLogger(logging.Logger):
 
         # this is called prior to all _log calls so makes sense to do it here?
         def isEnabledFor_lazyinit(*args, logger=logger, orig=logger.isEnabledFor, **kwargs) -> bool:
-            if not getattr(logger, _init_done, False):
+            if not getattr(logger, _init_done, False):  # init once, if necessary
                 setup_logger(logger, level=level)
                 setattr(logger, _init_done, True)
                 logger.isEnabledFor = orig # restore the callback
@@ -102,6 +103,24 @@ class LazyLogger(logging.Logger):
             setattr(logger, _init_done, False) # will setup on the first call
             logger.isEnabledFor = isEnabledFor_lazyinit  # type: ignore[assignment]
         return cast(LazyLogger, logger)
+
+
+# by default, logging.exception isn't logging traceback
+# which is a bit annoying since we have to
+# also see https://stackoverflow.com/questions/75121925/why-doesnt-python-logging-exception-method-log-traceback-by-default
+# tod also amend by post about defensive error handling?
+class AddExceptionTraceback(logging.Filter):
+    def filter(self, record):
+        s = super().filter(record)
+        if s is False:
+            return False
+        if record.levelname == 'ERROR':
+            exc = record.msg
+            if isinstance(exc, BaseException):
+                if record.exc_info is None or record.exc_info == (None, None, None):
+                    exc_info = (type(exc), exc, exc.__traceback__)
+                    record.exc_info = exc_info
+        return s
 
 
 # todo also save full log in a file?
@@ -126,7 +145,7 @@ class CollapseDebugHandler(logging.StreamHandler):
             import os
             columns, _ = os.get_terminal_size(0)
             # ugh. the columns thing is meh. dunno I guess ultimately need curses for that
-            # TODO also would be cool to have a terminal post-processor? kinda like tail but aware of logging keyworkds (INFO/DEBUG/etc)
+            # TODO also would be cool to have a terminal post-processor? kinda like tail but aware of logging keywords (INFO/DEBUG/etc)
             self.stream.write(msg + ' ' * max(0, columns - len(msg)) + ('' if cur else '\n'))
             self.flush()
         except:

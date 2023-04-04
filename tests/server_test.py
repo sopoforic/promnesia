@@ -14,7 +14,7 @@ from typing import NamedTuple, ContextManager, Optional
 import pytz
 import requests
 
-from promnesia.common import PathIsh
+from promnesia.common import PathIsh, _is_windows
 
 from integration_test import index_hypothesis, index_urls, index_some_demo_visits
 from common import tdir, under_ci, tdata, tmp_popen, promnesia_bin
@@ -86,7 +86,7 @@ CACHE_DIR  = r'{cache_dir}'
 
 def post(*args):
     cmd = [
-        'http',
+        sys.executable, '-m', 'httpie',
         # '--timeout', '10000', # useful for debugging
         '--ignore-stdin',
         'post',
@@ -104,9 +104,10 @@ def test_query_instapaper(tdir):
         # TODO actually test response?
 
 
-def test_visits(tmp_path):
+def test_visits(tmp_path: Path) -> None:
     test_url = 'https://takeout.google.com/settings/takeout'
     with _test_helper(tmp_path) as helper:
+        # TODO why are we querying 3 times ???
         for q in range(3):
             print(f"querying {q}")
             response = post(f'http://localhost:{helper.port}/visits', f'url={test_url}')
@@ -121,11 +122,14 @@ def test_search(tdir):
         assert len(response['visits']) == 8
 
 
-def test_visited(tmp_path):
+def test_visited(tmp_path: Path) -> None:
     test_url = 'https://takeout.google.com/settings/takeout'
     with _test_helper(tmp_path) as helper:
         endp = f'http://localhost:{helper.port}/visited'
-        assert post(endp, f'''urls:=["{test_url}","http://badurl.org"]''') == [True, False]
+        res = post(endp, f'''urls:=["{test_url}","http://badurl.org"]''')
+        [r1, r2] = res
+        assert r1 is not None
+        assert r2 is None
         assert post(endp, f'''urls:=[]''') == []
 
 
@@ -177,13 +181,32 @@ def test_visits_hier(tdir):
         assert {v['context'] for v in response['visits']} == {'parent url', 'Some context'}
 
 
-def test_status(tdir):
+def test_status_ok(tmp_path: Path) -> None:
+    dt_extra = pytz.timezone('Europe/London').localize(datetime.fromisoformat('2018-06-01T10:00:00.000000'))
+    index_some_demo_visits(tmp_path, count=10, base_dt=dt_extra, delta=timedelta(hours=1), update=False)
+
+    db_path = tmp_path / 'promnesia.sqlite'
+    with wserver(db=db_path) as helper:
+        response = post(f'http://localhost:{helper.port}/status')
+
+        version = response['version']
+        assert version is not None
+        assert len(version.split('.')) >= 2  # random check..
+
+        assert response['db'] == str(db_path)
+
+        assert response['stats'] == {'total_visits': 10}
+
+
+def test_status_error(tmp_path: Path) -> None:
     with wserver(db='/does/not/exist') as helper:
         response = post(f'http://localhost:{helper.port}/status')
-        assert 'ERROR' in response['db'] # defensive, it doesn't exist
+
         version = response['version']
         assert version is not None
         assert len(version.split('.')) >= 2 # random check..
+
+        assert 'ERROR' in response['db'] # defensive, it doesn't exist
 
 
 def test_basic(tmp_path: Path) -> None:

@@ -13,7 +13,8 @@ const env = {
     TARGET : process.env.TARGET,
     RELEASE: process.env.RELEASE,
     PUBLISH: process.env.PUBLISH,
-};
+}
+const ext_id = process.env.EXT_ID
 
 const pkg = require('./package.json');
 const baseManifest = require('./src/manifest.json');
@@ -72,30 +73,64 @@ const action = {
 };
 
 
-const permissionsExtra = [];
+const hostPermissions = [
+  // these are necessary for webNavigation to work
+  // otherwise we get "Cannot access contents of the page. Extension manifest must request permission to access the respective host."
+  "file:///*",
+  "https://*/*",
+  "http://*/*",
 
+  /* also note that if we have host permissions, we don't need tabs/activeTab permission to inject css/code
+   * this is necessary to call insertCss and executeScript
+   * note that just activeTab isn't enough because things aren't necessarily happening after user interaction like action
+   * e.g. sidebar/icon state is updating after webNavigation callback
+   * */
+]
 
-// NOTE: these aren't available on mobile
-permissionsExtra.push(
-    'contextMenus',
-    'history',
-);
+const permissions = [
+  ...hostPermissions,
+
+  'storage',
+
+  'webNavigation',
+  'contextMenus',
+
+  // todo could be optional?
+  'notifications',
+
+  // todo could be optional?
+  'bookmarks',   // NOTE: isn't available on mobile
+
+  // todo could be optional?
+  'history',  // NOTE: isn't available on mobile
+]
 
 
 const manifestExtra = {
     name: name,
     version: pkg.version,
-    // TODO description??
+    description: "Indicates whether and when the page was visited (and more!)",
+    icons: {
+        "48": "images/ic_not_visited_48.png",
+    },
     browser_action: action,
-    permissions: permissionsExtra,
+    permissions: permissions,
     options_ui: {},
     web_accessible_resources: [
-        // wtf?? it says that content scripts don't need to be listed... but doesn't work otherwise..
-        // https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/manifest.json/web_accessible_resources#Description
-        "anchorme.js",
-        // TODO however, seems that web_accessible_resources works without sidebar.js and sidebar.css?? odd
+        "sidebar.css", /* injected in the sidebar */
+        "*.js.map",  // debugging symbols
     ],
-};
+}
+
+// this is only needed during testing
+if (!publish) {
+  manifestExtra.content_scripts = [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["selenium_bridge.js"],
+    },
+  ]
+}
 
 if (dev) {
     manifestExtra.content_security_policy = "script-src 'self' 'unsafe-eval'; object-src 'self'";
@@ -147,7 +182,9 @@ if (!publish && target === T.FIREFOX) {
      * Otherwise, use temporary id (or some APIs don't work, at least in firefox..)
      */
     manifestExtra.browser_specific_settings = {
-        'gecko': {'id': 'promnesia@karlicoss.github.com'}
+      gecko: {
+        id: ext_id,
+      },
     }
 }
 
@@ -158,90 +195,93 @@ const options = {
   mode: dev ? 'development' : 'production',
   node: {
     // no idea what does it mean... https://github.com/webpack/webpack/issues/5627#issuecomment-394290231
-    // but it does get rid of some Function() which webpacka apparently generates
+    // but it does get rid of some Function() which webpack generates (and which is flagged by web-ext lint)
+    // this was still necessary at times (depending on webpack imports) circa 2023
     global: false,
   },
   entry: {
-    background              : path.join(__dirname, './src/background'),
-    options_page            : path.join(__dirname, './src/options_page'),
-    sidebar                 : path.join(__dirname, './src/sidebar'),
-    search                  : path.join(__dirname, './src/search'),
-    background_injector     : path.join(__dirname, './src/background_injector'),
+    background: {
+      import: path.join(__dirname, './src/background'),
+      dependOn: ['webext-options-sync'],
+    },
+    options_page: {
+      import: path.join(__dirname, './src/options_page'),
+      dependOn: ['webext-options-sync'],
+    },
+    sidebar: {
+      import: path.join(__dirname, './src/sidebar'),
+      dependOn: ['webext-options-sync'],
+    },
+    search: {
+      import: path.join(__dirname, './src/search'),
+      dependOn: ['webext-options-sync'],
+    },
+    'webext-options-sync': {
+      import: "webext-options-sync",
+    },
+    anchorme: {
+      import: 'anchorme',
+      library: {
+        name: 'promnesia_anchorme',
+        type: "window", /* 'sets' library to window. variable... all the other types didn't work :( */
+      },
+    },
+    showvisited: {
+      import: path.join(__dirname, './src/showvisited'),
+    },
   },
   output: {
-    publicPath: '', // https://stackoverflow.com/a/64715069
+    // hmm. according to https://stackoverflow.com/a/64715069
+    // settings publicPath: '' shouldn't be necessary anymore
+    // but still without it getting "Automatic publicPath is not supported in this browser" when trying to open sidebar
+    // whatever.
+    publicPath: '',
     path: buildPath,
     filename: '[name].js',
     // chunkFilename: '[name].bundle.js',
   },
   optimization: {
+    // https://webpack.js.org/configuration/optimization
+    minimize: !dev,
     splitChunks: {
       automaticNameDelimiter: '_', // ugh. default ~ can't be loaded by the browser??
-    }
+    },
   },
   module: {
+    // todo no idea why is exclude: /node_modules/ necessary here???
       rules: [
       {
           test: /\.js$/,
+          loader: 'babel-loader',
           exclude: /node_modules/,
-          use: {
-              loader: 'babel-loader',
-          }
       },
       {
-          test: /\.css$/i,
+          test: /\.css$/i,  // todo why case independent??
           use: ['style-loader', 'css-loader'],
+          // hmm, if we add the exclude, codemirror.css loading isn't working???
+          // exclude: /node_modules/,
       },
       {
           test: /\.html$/,
           loader: 'html-loader',
           exclude: /node_modules/
       },
-      {
-          test: /node_modules\/basket.js\/lib\/basket.js/,
-          use: {
-              loader: path.join(__dirname, 'patcher.js'),
-              options: {
-                  patches: [
-                      /* see
-                       * https://github.com/addyosmani/basket.js/issues/174
-                       * https://github.com/addyosmani/basket.js/issues/173
-                       */
-                      {code: /RSVP.Promise/g, newCode: 'Promise'},
-                      {code: 'RSVP.all', newCode: 'Promise.all'},
-                      {code: 'window.basket = {', newCode: 'var basket = window.basket= {'},
-                      // ugh. sometimes it patches it twice somehow??? wtf???
-                      {code: 'var basket = var basket = window.basket= {', newCode: 'var basket = window.basket= {'},
-                  ],
-              }
-          },
-      },
-      {
-          test: /node_modules\/anchorme\/dist\/browser\/anchorme.js/,
-          use: {
-              loader: path.join(__dirname, 'patcher.js'),
-              options: {
-                  patches: [
-                      /* need [] for org-mode */
-                      // https://github.com/alexcorvi/anchorme.js/blob/098843bc0d042601cff592c4f8c9f6d0424c09cd/src/regex.ts#L11
-                      {code   : '\\\\[\\\\]', // need double escaping for \...
-                       newCode: ''          } // TODO ugh. sort of flaky..
-                  ],
-              }
-          },
-      }
     ]
   },
   plugins: [
     new CleanWebpackPlugin(), // ok, respects symlinks
+
+    // without copy plugin, webpack only bundles js/json files referenced in entrypoints
     new CopyWebpackPlugin({
       patterns: [
-        { from: 'images/*'          },
-        { from: 'src/**/*.html', to: '[name][ext]'},
-        { from: 'src/**/*.css' , to: '[name][ext]'},
-        { from: 'src/toastify.js'   }, // TODO my version is tweaked, right?
-        { from: 'src/showvisited.js'},
-        // { from: 'node_modules/webextension-polyfill/dist/browser-polyfill.min.js'},
+        { from: 'images/*.png' },
+        { context: 'src', from: '**/*.html'     },
+        { context: 'src', from: '**/*.css'      },
+        // these js files aren't entrypoints so need copying too
+        // not sure if it's the right way, but I guess webpack can't guess otherwise
+        { context: 'src', from: 'toastify.js'   },  // TODO my version is tweaked, right?
+        { context: 'src', from: 'selenium_bridge.js' },
+        { from: 'node_modules/webextension-polyfill/dist/browser-polyfill.js' },
        ]
     }),
     new WebpackExtensionManifestPlugin({
@@ -250,8 +290,11 @@ const options = {
         extend: manifestExtra,
       }
     }),
-  ]
-};
+  ],
+  // docs claim it's the slowest but pretty fast anyway
+  // also works with production builds
+  devtool: 'source-map',
+}
 
 
 module.exports = options;

@@ -8,7 +8,6 @@ from typing import Optional
 
 from common import uses_x
 from end2end_test import FF, CH, browsers, _test_helper
-from end2end_test import PYTHON_DOC_URL
 from integration_test import index_urls
 from end2end_test import confirm
 from end2end_test import configure, get_window_id
@@ -17,7 +16,7 @@ from record import record, hotkeys, CURSOR_SCRIPT, SELECT_SCRIPT
 
 
 def real_db():
-    from private import real_db_path, test_filter # type: ignore
+    from private import real_db_path, test_filter  # type: ignore[import,attr-defined]
     from tempfile import TemporaryDirectory
     import shutil
     def indexer(tdir: Path):
@@ -474,7 +473,7 @@ def test_demo_highlights(tmp_path, browser):
 
 
     def before(driver):
-        from private import instapaper_cookies
+        from private import instapaper_cookies  # type: ignore[import,attr-defined]
 
         # necessary to set cookies on instapaper..
         driver.get('http://instapaper.com')

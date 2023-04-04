@@ -2,7 +2,6 @@
 import type {Url} from './common';
 import {Blacklisted} from './common';
 import {getOptions} from './options';
-import {achrome} from './async_chrome'
 
 
 // last resort.. because these could be annoying (also might not make sense to display globally)
@@ -40,21 +39,27 @@ export function alertError(obj: any) {
     alert(message);
 }
 
-export function defensify(pf: (...any) => Promise<any>, name: string): (any) => Promise<any> {
+
+export function defensify(pf: (...any) => Promise<any>, name: string): (...any) => Promise<void> {
     const fname = pf.name // hopefully it's always present?
-    return (...args) => pf(...args).catch((err) => {
-        console.error('function "%s" %s failed: %o', fname, name, err);
+    const error_handler = (err: Error) => {
+        console.error('function "%s" %s failed: %o', fname, name, err)
         getOptions().then(opts => {
             if (opts.verbose_errors_on) {
-                notifyError(err, 'defensify');
+                notifyError(err, 'defensify')
             } else {
-                console.warn("error notification is suppressed by 'verbose_errors' option");
+                console.warn("error notification is suppressed by 'verbose_errors' option")
             }
-        });
-    });
+        })
+    }
+    return (...args) => pf(...args).then(() => {
+        // suppress return values, since the defensive error handler 'erases; the type anyway'
+        return
+    }).catch(error_handler)
 }
 
 
+// TODO return type should be void here too...
 export function defensifyAlert(pf: (...any) => Promise<any>): (any) => Promise<any> {
     return (...args) => pf(...args).catch(alertError);
 }
@@ -71,10 +76,10 @@ export async function _showTabNotification(tabId: number, text: string, {color: 
     // TODO can it be remote script?
     text = text.replace(/\n/g, "\\n"); // ....
 
-    await achrome.tabs.executeScript(tabId, {file: 'toastify.js'})
-    await achrome.tabs.insertCSS(tabId, {file: 'toastify.css'});
+    await browser.tabs.executeScript(tabId, {file: 'toastify.js'})
+    await browser.tabs.insertCSS(tabId, {file: 'toastify.css'});
     // TODO extract toast settings somewhere...
-    await achrome.tabs.executeScript(tabId, { code: `
+    await browser.tabs.executeScript(tabId, { code: `
 Toastify({
   text: "${text}",
   duration: ${duration_ms},
@@ -90,7 +95,7 @@ Toastify({
 }
 
 // TODO maybe if tabId = -1, show normal notification?
-async function showTabNotification(tabId: ?number, message: string, opts: ToastOptions) {
+async function showTabNotification(tabId: ?number, message: string, opts: ToastOptions): Promise<void> {
     if (tabId == null) {
         // not much else we can do..
         desktopNotify(message)
@@ -117,16 +122,16 @@ async function showTabNotification(tabId: ?number, message: string, opts: ToastO
 }
 
 export const notifications = {
-    notify: async function(tabId: ?number, message: string, opts: ToastOptions) {
+    notify: async function(tabId: ?number, message: string, opts: ToastOptions): Promise<void> {
         return showTabNotification(tabId, message, opts)
     },
-    error: async function(tabId: number, e: Error | string) {
+    error: async function(tabId: number, e: Error | string): Promise<void> {
         return notifications.notify(tabId, String(e), {color: 'red'})
     },
-    page_ignored: async function(tabId: ?number, url: ?Url, reason: string) {
+    page_ignored: async function(tabId: ?number, url: ?Url, reason: string): Promise<void> {
         return notifications.notify(tabId, `${url || ''} is ignored: ${reason}`, {color: 'red'})
     },
-    excluded: async function(tabId: number, b: Blacklisted) {
+    excluded: async function(tabId: number, b: Blacklisted): Promise<void> {
         return notifications.notify(tabId, `${b.url} is excluded: ${b.reason}`, {color: 'red'})
     },
     desktop: desktopNotify,

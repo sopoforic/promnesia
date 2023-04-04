@@ -55,6 +55,9 @@ dom_subst = [
     ('np.reddit.'     , 'reddit.'),
 
     ('m.facebook.'    , 'facebook.'),
+    # app.getpocket.com is the canonical domain in the JSON returned by
+    # https://github.com/karlicoss/pockexport, so let's canonicalize to that.
+    ('getpocket.'     , 'app.getpocket.'),
 ]
 
 def canonify_domain(dom: str) -> str:
@@ -614,6 +617,14 @@ FB_PATTERNS = [
     r'F/notes/U/P',
 ]
 
+PKP = r'^(app)?\.getpocket\.com'
+
+PK_PATTERNS = [
+    {
+        'ID': r'\d+',
+    },
+    PKP + '/read/ID',
+]
 
 # NOTE: right, I think this is just for analysis so far... not actually used
 PATTERNS = {
@@ -624,6 +635,7 @@ PATTERNS = {
     'stackoverflow': SO_PATTERNS,
     'facebook'  : FB_PATTERNS,
     'wikipedia' : WK_PATTERNS,
+    'pocket'    : PK_PATTERNS,
     # 'news.ycombinator.com': YC_PATTERNS,
 }
 

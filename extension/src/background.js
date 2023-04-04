@@ -1,30 +1,46 @@
 /* @flow */
 
+// provided by the manifest
+// import * as browser from "webextension-polyfill"
+
 import type {Url, SearchPageParams} from './common';
-import {Visit, Visits, Blacklisted, unwrap, Methods} from './common'
+import {Visit, Visits, Blacklisted, unwrap, Methods, uuid} from './common'
 import type {Options} from './options'
 import {Toggles, getOptions, setOption, THIS_BROWSER_TAG} from './options'
 
-import {achrome} from './async_chrome'
-import {defensify, notifications, Notify} from './notifications'
+import {defensify, notifications, Notify, notifyError} from './notifications'
 import {Filterlist} from './filterlist'
-import {isAndroid, allsources} from './sources'
-
-const isMobile = isAndroid;
+import {isAndroid as isMobile, allsources} from './sources'
 
 
-async function actions(): Promise<Array<chrome$browserAction | chrome$pageAction>> {
-    const res = [chrome.browserAction];
+// useful for debugging
+const UUID = uuid()
+console.info('[promnesia]: running background page with UUID %s', UUID)
 
-    const android = await isAndroid();
-    if (android) {
-        res.push(chrome.pageAction);
-    }
+
+
+function actions(): Array<chrome$browserAction | chrome$pageAction> {
     // eh, on mobile neither pageAction nor browserAction have setIcon
     // but we can use pageAction to show at least some (default) icon in some circumstances
 
     // https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Differences_between_desktop_and_Android#User_interface
-    return res;
+    const res = [chrome.browserAction]
+
+    // need to be defensive, it's only for mobile firefox
+    if (chrome.pageAction) {
+        res.push(chrome.pageAction)
+    } else {
+        // this is a bit backwards because we need to register callbacks synchronously
+        // otherwise isn't not working well after background page unloads
+        // callbacks don't trigger loading background if they are registered in async
+        // see https://developer.chrome.com/docs/extensions/mv2/background_pages/#listeners
+        isMobile().then(mobile => {
+            if (mobile) {
+                notifyError("Expected pageAction to be present!")
+            }
+        })
+    }
+    return res
 }
 
 
@@ -35,6 +51,12 @@ type IconStyle = {
     title: string,
     text: string,
 }
+
+
+type TabUrl = {|
+    url: string,
+    id : number,
+|}
 
 
 // TODO this can be tested?
@@ -99,9 +121,8 @@ function getIconStyle(result: Result): IconStyle {
 }
 
 
-async function updateState (tab: chrome$Tab) {
-    const url = unwrap(tab.url);
-    const tabId = unwrap(tab.id);
+async function updateState(tab: TabUrl): Promise<void> {
+    const {url: url, id: tabId} = tab
 
     if (ignored(url)) {
         // todo reflect in the sidebar/popup?
@@ -111,25 +132,50 @@ async function updateState (tab: chrome$Tab) {
 
     const opts = await getOptions()
 
-    // TODO right... so if sidebar isn't injected, the messages will not be delivered.. well, hopefully it's quick enough..
+    // NOTE if sidebar isn't injected, the messages will not be delivered.. well, hopefully it's quick enough..
     // also this really needs to happen once for a specific tab? otherwise gonna have callback crap (i.e. messages received multiple times)
 
-    // TODO only inject after blacklist check? just in case?
-    const inject = () => achrome.tabs.executeScript(tabId, {file: 'sidebar.js'})
-    // TODO hmm. in theory script and CSS injections commute, but css order on the othe hand might matter?
-    // not sure, but using deferred promises just in case
-          .then(() => achrome.tabs.insertCSS(tabId, {file: 'sidebar-outer.css'}))
-          .then(() => achrome.tabs.insertCSS(tabId, {file: 'sidebar.css'      }))
-          .then(() => achrome.tabs.insertCSS(tabId, {code: opts.position_css  }))
+    // todo only inject after blacklist check? just in case?
+    let proceed: boolean
+    try {
+        await browser.tabs.insertCSS    (tabId, {file: 'sidebar-outer.css'})
+        await browser.tabs.insertCSS    (tabId, {file: 'sidebar.css'      })
+        await browser.tabs.insertCSS    (tabId, {code: opts.position_css  })
+        await browser.tabs.executeScript(tabId, {file: 'browser-polyfill.js'})
+        await browser.tabs.executeScript(tabId, {file: 'webext-options-sync.js'})
+        await browser.tabs.executeScript(tabId, {file: 'anchorme.js'})
+        if (opts.sidebar_detect_urls) {
+            // meh
+            await browser.tabs.executeScript(tabId, {file: 'sidebar.js'})
+        }
+        proceed = true // successful code injection
+    } catch (error) {
+        const msg = error.message
+        if (msg == null) {
+            throw error
+        }
+        if (msg.includes('Missing host permission for the tab')) {
+            // this seems to happen if we started injecting the code, but URL changed during that
+            // e.g. if you click on links in quick succession or press backward/forward quickly (esp. with hotkeys)
+            // should be covered by test_sidebar_navigation
 
+            // NOTE: actually a bit misleading -- on firefox we are always getting this when we don't have host permissions
+            // whereas in chrome we're getting
+            // "Cannot access contents of the page. Extension manifest must request permission to access the respective host"
+            proceed = false
+        } else {
+            throw error
+        }
+    }
 
     // NOTE: if the page is unreachable, we can't inject stuff in it
     // not sure how to detect it? tab doesn't have any interesting attributes
     // firefox sets tab.title to "Server Not Found"? (TODO also see isOk logic below)
-    // TODO in this case, could set browser action to open a new tab (i.e. search) or something?
-    await defensify(inject, `sidebar injection for tabId: ${tabId} url: ${url}`)();
-    // TODO crap, at first I forgot () at the end, and flow didn't complain which resulted in flakiness wtf??
-
+    // TODO not sure if worth mapping promnesia button to something else in this case
+    if (!proceed) {
+        console.debug('cancelling state update request for %o -- likely URL changed during processing', tab)
+        return
+    }
 
     let visits: Result
     const filterlist = await Filterlist.global()
@@ -153,7 +199,7 @@ async function updateState (tab: chrome$Tab) {
 
     // ugh, many of these are not supported on android.. https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/pageAction
     // TODO not sure if can benefit from setPopup?
-    for (const action of (await actions())) {
+    for (const action of actions()) {
         // ugh, some of these only present in browserAction..
         if (action.setTitle) {
             // $FlowFixMe
@@ -206,7 +252,7 @@ async function updateState (tab: chrome$Tab) {
     if (opts.sidebar_always_show) {
         // TODO maybe hide if there are no visits?
         // let it sxecute asynchronously
-        setTimeout(() => openSidebar(tab))
+        setTimeout(() => toggleSidebarOnTab(tab))
     }
 
     if (visits instanceof Error) {
@@ -220,7 +266,7 @@ async function updateState (tab: chrome$Tab) {
     // https://stackoverflow.com/questions/32761782/can-a-chrome-extension-run-code-on-a-chrome-error-page-i-e-err-internet-disco
     // https://stackoverflow.com/questions/37093152/unchecked-runtime-lasterror-while-running-tabs-executescript-cannot-access-cont
     // a little hacky, but kinda works? in Firefox too apparently
-    const isOk = (await achrome.tabs.get(tabId)).favIconUrl != 'chrome://global/skin/icons/warning.svg'
+    const isOk = (await browser.tabs.get(tabId)).favIconUrl != 'chrome://global/skin/icons/warning.svg'
 
     // TODO maybe store last time we showed it so it's not that annoying... although I definitely need js popup notification.
     const locs = visits.self_contexts().map(l => l == null ? null : l.title)
@@ -274,7 +320,7 @@ async function filter_urls(urls: Array<?Url>) {
 
 async function doToggleMarkVisited(tabId: number, {show}: {show: ?boolean} = {show: null}) {
     // first check if we need to disable TODO
-    const _should_show = await achrome.tabs.executeScript(tabId, {
+    const _should_show = await browser.tabs.executeScript(tabId, {
         code: `
 {
     let res // ?boolean
@@ -307,7 +353,7 @@ async function doToggleMarkVisited(tabId: number, {show}: {show: ?boolean} = {sh
     }
 
     // collect URLS from the page
-    const mresults = await achrome.tabs.executeScript(tabId, {
+    const mresults = await browser.tabs.executeScript(tabId, {
         code: `
      // NOTE: important to make a snapshot here.. otherwise might go in an infinite loop
      link_elements = Array.from(document.getElementsByTagName("a"))
@@ -371,13 +417,13 @@ async function doToggleMarkVisited(tabId: number, {show}: {show: ?boolean} = {sh
     }
     // todo ugh. errors inside the script (e.g. syntax errors) get swallowed..
     // TODO not sure.. probably need to inject the script once and then use a message listener or something like in sidebar??
-    await achrome.tabs.insertCSS(tabId, {
+    await browser.tabs.insertCSS(tabId, {
         file: 'showvisited.css',
     })
-    await achrome.tabs.executeScript(tabId, {
+    await browser.tabs.executeScript(tabId, {
         file: 'showvisited.js',
     })
-    await achrome.tabs.executeScript(tabId, {
+    await browser.tabs.executeScript(tabId, {
         code: `
 visited = new Map(JSON.parse(${JSON.stringify(JSON.stringify([...visited]))}))
 setTimeout(() => showMarks())
@@ -399,6 +445,7 @@ function isSpecialProtocol(url: string): boolean {
         'chrome-extension:',
         'moz-extension:',
         'about:', // e.g. about:addons or about:devtool
+        'data:', // start page under chrome webdriver
     ].includes(pro)) {
         return true;
     }
@@ -424,92 +471,64 @@ function ignored(url: ?string): ?string {
     return null
 }
 
-/*
-// TODO ehh... not even sure that this is correct thing to do...
-// $FlowFixMe
-chrome.webNavigation.onDOMContentLoaded.addListener(detail => {
-    get_options(opts => {
-        if (!opts.dots) {
-            return;
-        }
-        const url = unwrap(detail.url);
-        if (detail.frameId != 0) {
-            ldebug('ignoring child iframe for %s', url);
-            return;
-        }
 
-        if (ignored(url)) {
-            ldebug("ignoring %s", url);
-            return;
-        }
-        // https://kk.org/thetechnium/
-        ldebug('finished loading DOM %s', detail);
+/* Some info about webNavigation callbacks
+- opening new tab, typing https://example.com/ and pressing enter
+  before -> committed -> domloaded -> completed
+- opening in new back tab -- seems same as above
+- ctrl-shift-t -- same as above
+- reloading: same as above, the different thing is it has trabsitionType: reload
+- clicking a page link: same as above, transitionType: link
+- pressing "back" or "forward"
+  different events before -> commit -> complete (so no domloaded)
+  type: reload, qualifiers: back
 
-        markVisited(detail.tabId, opts);
-        // updateState();
-    });
-});
-*/
+  TODO: might be interesting to start loading things in "before" instead -- could update icon etc earlier?
+ **/
+// TODO maybe best to add filter object so the callback doesn't fire at all
+browser.webNavigation.onCompleted.addListener(defensify(async (detail: browser$WebNavigationDetail) => {
+    const fid = detail.frameId
+    const url = detail.url
+    if (fid == null || url == null) {
+        return
+    }
+    if (fid != 0) {
+        return
+    }
 
-// chrome.tabs.onReplaced.addListener(updateState);
-
-// $FlowFixMe
-chrome.tabs.onUpdated.addListener(defensify(async (tabId: number, info, tab: chrome$Tab) => {
-    // too spammy in logs
-    delete tab.favIconUrl
-    delete info.favIconUrl
-    //
-    console.debug('onUpdated %o %o', tab, info)
-
-    const url = tab.url
     const ireason = ignored(url)
     if (ireason != null) {
         /* on Vivaldi I've seen url being "" */
-        console.debug('onUpdated %s: ignoring, reason: %s', url, ireason)
-    }
-    // right, tab updated triggered quite a lot, e.g. when the title is blinking
-    // ok, so far there are basically two cases
-    // 1. you open new tab. in that case 'url' won't be passed but onDomContentLoaded will be triggered
-    // 2. you navigate within the same tab, e.g. on youtube. then url will be passed, but onDomContentLoaded doesn't trigger. TODO not sure if it's always the case. maybe it's only YT
-    // TODO shit, so we might need to hide previous dots? ugh...
-
-    // TODO vvvv these might need to be cleaned up; not sure how relevant...
-    // page refresh: loading -> complete (no url at any point)
-    // clicking on link: loading (url) -> complete
-    // opening new link: loading -> loading (url) -> complete
-    // ugh. looks like 'complete' is the most realiable???
-    // but, I checked with 'complete' and sometimes it would reload many things with loading -> complete..... shit.
-
-    // also if you, say, go to web.telegram.org it's gonna show multiple notifications due to redirect... but perhaps this can just be suppressed..
-
-    if (info['status'] != 'complete') {
+        // TODO check "" here??
         return
     }
-    console.info('requesting! %s', url)
+
+    console.debug('webNavigation.onCompleted: %o %o', UUID, detail)
+
     try {
-        await updateState(tab);
+        await updateState({url: url, id: detail.tabId})
     } catch (error) {
-        const message = error.message;
+        const message = error.message
         if (message == null) {
-            throw error;
+            throw error
         }
 
         if (message.includes('Invalid tab ID')) {
-            console.warn('Error %o ignored; most likely due to closed tab', error);
-            return;
+            console.warn('Error %o ignored; most likely due to closed tab', error)
+            return
         }
         if (message.includes('An unexpected error occurred')) {
-            console.warn('Error %o ignored; presumably bug in Firefox https://bugzilla.mozilla.org/show_bug.cgi?id=1397667', error);
+            console.warn('Error %o ignored; presumably bug in Firefox https://bugzilla.mozilla.org/show_bug.cgi?id=1397667', error)
             // also that https://bugzilla.mozilla.org/show_bug.cgi?id=1290016
-            return;
+            return
         }
-        throw error;
+        throw error
     }
-}, 'onUpdated'));
+}, 'webNavigation.onCompleteed'))
 
 
-export async function getActiveTab(): Promise<?chrome$Tab> {
-    const tabs = await achrome.tabs.query({
+export async function getActiveTab(): Promise<?TabUrl> {
+    const tabs = await browser.tabs.query({
         currentWindow: true,
         active: true,
     })
@@ -521,7 +540,10 @@ export async function getActiveTab(): Promise<?chrome$Tab> {
         console.error("Multiple active tabs: %o", tabs) // TODO handle properly?
     }
     const tab = tabs[0]
-    return tab
+    if (tab.url == null || tab.id == null) {
+        return null // meh..
+    }
+    return {url: tab.url, id: tab.id}
 }
 
 
@@ -531,7 +553,7 @@ type ShouldProcess = {|
 |}
 
 // check if page needs handling and notify suer if/why it can't be processed
-async function shouldProcessPage(tab: ?chrome$Tab): Promise<?ShouldProcess> {
+async function shouldProcessPage(tab: ?TabUrl): Promise<?ShouldProcess> {
     if (tab == null) {
         await notifications.page_ignored(null, null, "Couldn't determine current tab: must be a special page (or a bug?)")
         return
@@ -583,7 +605,7 @@ async function handleOpenSearch(p: SearchPageParams = {}) {
 }
 
 
-const onMessageCallback = async (msg) => { // TODO not sure if should defensify here?
+const onMessageCallback = async (msg: any) => { // TODO not sure if should defensify here?
     const method = msg.method
     if (method == Methods.GET_SIDEBAR_VISITS) {
         // TODO not sure if it might do unnecessary notifications here?
@@ -624,22 +646,7 @@ const onMessageCallback = async (msg) => { // TODO not sure if should defensify 
 }
 
 
-/*
-   On android, clicking on icon in address bar doesn't seem to work.. however clicking in menu triggers this action?
-   https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Differences_between_desktop_and_Android#User_interface
-
-   popup is available for pageAction?? can use it for blacklisting/search?
-*/
-async function registerActions() {
-    // NOTE: on mobile, this sets action for both icon (if it's displayed) and in the menu
-    for (const action of (await actions())) {
-        // $FlowFixMe
-        action.onClicked.addListener(defensify(openSidebar, 'action.onClicked'));
-    }
-}
-
-// note: this is user click callback
-export async function openSidebar(tab: chrome$Tab) {
+export async function toggleSidebarOnTab(tab: TabUrl) {
     const should = await shouldProcessPage(tab)
     if (should == null) {
         return
@@ -649,6 +656,25 @@ export async function openSidebar(tab: chrome$Tab) {
     sendSidebarMessage(tid, {method: Methods.SIDEBAR_TOGGLE})
 }
 
+export async function handleToggleSidebar() {
+    const atab = await getActiveTab()
+    toggleSidebarOnTab(unwrap(atab))
+}
+
+/*
+   On android, clicking on icon in address bar doesn't seem to work.. however clicking in menu triggers this action?
+   https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Differences_between_desktop_and_Android#User_interface
+
+   popup is available for pageAction?? can use it for blacklisting/search?
+*/
+// note: this is user click callback
+function registerActions() {
+    // NOTE: on mobile, this sets action for both icon (if it's displayed) and in the menu
+    for (const action of actions()) {
+        // $FlowFixMe
+        action.onClicked.addListener(defensify(toggleSidebarOnTab, 'action.onClicked'))
+    }
+}
 
 // NOTE: these have to be in sync with webpack.config.js
 // presumably shouldn't rename either otherwise will impact existing user keybindings
@@ -676,17 +702,13 @@ type MenuInfo = {
 
 
 async function active(): Promise<TabUrl> {
-    const atab = unwrap(await getActiveTab())
-    return {
-        tabId: unwrap(atab.id ),
-        url  : unwrap(atab.url),
-    }
+    return unwrap(await getActiveTab())
 }
 
 
 async function globalExcludelistPrompt(): Promise<Array<Url>> {
     // NOTE: needs to take active tab becaue tab isn't present in the 'info' object if it was clicked from the launcher etc.
-    const {tabId: tabId, url: url} = await active()
+    const {id: tabId, url: url} = await active()
     let prompt = `Global excludelist. Supported formats:
 - domain.name, e.g.: web.telegram.org
       Will exclude whole Telegram website.
@@ -697,7 +719,7 @@ async function globalExcludelistPrompt(): Promise<Array<Url>> {
 `;
 
     // ugh. won't work for multiple urls, prompt can only be single line...
-    const res = await achrome.tabs.executeScript(tabId, {
+    const res = await browser.tabs.executeScript(tabId, {
         code: `prompt(\`${prompt}\`, "${url}");`
     })
     if (res == null || res[0] == null) {
@@ -712,7 +734,7 @@ async function handleAddToGlobalExcludelist() {
     if (added.length == 0) {
         return
     }
-    const {tabId: tabId, url: _url} = await active()
+    const {id: tabId, url: _url} = await active()
     // TODO not sure if it should be normalised? just rely on regexes, it should be fine 99% of time?
     console.debug('excluding %o', added)
 
@@ -729,18 +751,12 @@ async function handleAddToGlobalExcludelist() {
     await setOption({blacklist: blacklist})
 }
 
-type TabUrl = {|
-    tabId: number,
-    url: string,
-|}
-
-
 const AddToMarkVisitedExcludelist = {
     zapper: async function () {
         // TODO only call prompts if more than one? sort before showing?
-        const {tabId: tabId, url: _url} = await active()
+        const {id: tabId, url: _url} = await active()
 
-        await achrome.tabs.executeScript(tabId, {
+        await browser.tabs.executeScript(tabId, {
             code: `{
 let listener = e => {
     e.stopPropagation()
@@ -791,13 +807,13 @@ window.addEventListener('keydown', cancel)
 
 }`})
     },
-    handleZapperResult: async function(msg) {
+    handleZapperResult: async function(msg: any) {
         const urls: Array<Url> = msg.data
         await AddToMarkVisitedExcludelist.add(urls)
     },
     add: async function(urls: Array<Url>) {
         // TODO filter against existing list first? not sure + global list??
-        const {tabId: tabId, url: _tabUrl} = await active()
+        const {id: tabId, url: _tabUrl} = await active()
         if (urls.length > 1) {
             // TODO prompt to filter?
         }
@@ -916,35 +932,40 @@ const TOGGLES: Array<MenuToggle> = [
     },
 ]
 
-/*
-  Right, that's a hack for some nasty bug/behaviour that happens both in firefox and chrome.
-  Basically, if you have tabs open for html pages within the extensions (e.g. moz-extensions://<id>/search.html ), each of them ends up with a copy of background page.
-  That results it multiple responses for commands, messages etc.
-  Only relevantinformation I could found about that is https://stackoverflow.com/questions/30856001/why-does-chrome-tabs-create-create-2-tabs , but that didn't really help
-  This behaviour is tested by test_duplicate_background_pages to prevent regressions
-*/
 
-// TODO maybe this is what needs to be persisted?
-var backgroundInitialised = false; // should be synchronous hopefully?
 function initBackground() {
-    /* better set early to minimize the potential for races? */
-    backgroundInitialised = true;
+    // NOTE: callback registering needs to be synchronous
+    // otherwise doesn't work well with background page suspension
 
     // $FlowFixMe
-    chrome.runtime.onMessage.addListener(onMessageCallback);
+    chrome.runtime.onMessage.addListener(onMessageCallback)
 
-    registerActions();
+    registerActions()
 
-    // TODO make it defensive in case of error tabs? if it fails then can be conservative and ignore menu etc anyway
-    isAndroid().then(android => {
-        if (android) {
-            return;
-        }
-
+    // need to be defensive since commands API isn't available under mobile browser
+    if (chrome.commands) {
         //  $FlowFixMe // err, complains at Promise but nevertheless works
-        chrome.commands.onCommand.addListener(onCommandCallback);
+        chrome.commands.onCommand.addListener(onCommandCallback)
+    } else {
+        isMobile().then(mobile => {
+            if (!mobile) {
+                notifyError("error: chrome.commands should be available")
+            }
+        })
+    }
 
-        // TODO?? Unchecked runtime.lastError: Cannot create item with duplicate id blacklist-domain on Chrome
+    // not sure why but context menus need to be created in onInstalled?
+    // https://stackoverflow.com/a/19578984/706389
+    chrome.runtime.onInstalled.addListener(() => {
+        // need to be defensive since contextMenus API isn't available under mobile browser
+        if (chrome.contextMenus == undefined) {
+            isMobile().then(mobile => {
+                if (!mobile) {
+                    notifyError("error: chrome.contextMenus should be available")
+                }
+            })
+            return
+        }
         for (const {id: id, title: title, parentId: parentId, contexts: contexts} of MENUS) {
             chrome.contextMenus.create({
                 id: id,
@@ -953,7 +974,10 @@ function initBackground() {
                 contexts: contexts || DEFAULT_CONTEXTS,
             })
         }
-        setTimeout(() => getOptions().then((opts) => {
+        // TODO crap -- we need to refresh these menus when options update??
+        // it's broken in prod though so can live without it for a bit
+        // also cover with a test
+        getOptions().then((opts) => {
             for (const {id: id, title: title, parentId: parentId, checker: checker, contexts: contexts} of TOGGLES) {
                 chrome.contextMenus.create({
                     id: id,
@@ -964,7 +988,7 @@ function initBackground() {
                     checked: checker(opts),
                 })
             }
-        }))
+        })
 
         const onMenuClickedCallback = defensify(async (info: MenuInfo, tab: chrome$Tab) => {
             const mid = info.menuItemId
@@ -980,37 +1004,31 @@ function initBackground() {
         }, 'onMenuClicked');
 
         //  $FlowFixMe // err, complains at Promise but nevertheless works
-        chrome.contextMenus.onClicked.addListener(onMenuClickedCallback);
+        chrome.contextMenus.onClicked.addListener(onMenuClickedCallback)
     })
 }
 
 
+chrome.runtime.onMessage.addListener((info: any, _: chrome$MessageSender) => {
+    // see selenium_bridge.js
+    if (info === 'selenium-bridge-activate') {
+        handleToggleSidebar()
+    }
+    if (info === 'selenium-bridge-mark-visited') {
+        handleToggleMarkVisited()
+    }
+    if (info === 'selenium-bridge-search') {
+        handleOpenSearch()
+    }
+})
+
+initBackground()
+
+
+// for debugging
 /*
-  The idea is that each page pokes background.
-  If background happens to be extensions' background, it's ignored; otherwise we're trying to register callbacks.
- */
-chrome.runtime.onMessage.addListener((info: any, sender: chrome$MessageSender) => {
-    if (info.method != "INJECT_BACKGROUND_CALLBACKS") {
-        console.debug("ignoring %o %o; %s", info, sender, backgroundInitialised);
-        return;
-    }
-
-    console.log("onmessage %o %o", info, sender);
-    const aurl = sender.tab == null ? null : sender.tab.url;
-
-    if (backgroundInitialised) {
-        console.debug("background already initialised");
-        return;
-    }
-
-    // TODO elaborate
-    if (aurl && isSpecialProtocol(aurl)) {
-        console.warn("Suppressing special background page %s", aurl)
-        return;
-    }
-
-    console.info("Registering background page callbacks in tab %s", aurl);
-
-    /* TODO not sure if ok or not to await? it shouldn't be blocking right? */
-    initBackground();
-});
+browser.runtime.onSuspend.addListener(() => {
+    console.error("SUSPENDING BACKGROUND PAGE!!")
+    notifyError("SUSPENDING BACKGROUND!!")
+})
+*/

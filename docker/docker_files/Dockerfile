@@ -1,7 +1,7 @@
 FROM python:3
 
 RUN mkdir /user_data \
-    mkdir /usr/src/promnisia
+    mkdir /usr/src/promnesia
 
 WORKDIR /usr/src/promnesia
 COPY src/ .
@@ -11,8 +11,8 @@ COPY setup.py /usr/src/
 
 RUN pip install --no-cache-dir more_itertools pytz sqlalchemy cachew \
                 appdirs urlextract python-magic \
-                tzlocal hug \
-                logzero HPI beautifulsoup4 lxml mistletoe orgparse dataset
+                tzlocal \
+                logzero HPI beautifulsoup4 lxml mistletoe orgparse dataset fastapi uvicorn
 
 ENV PPATH=/usr/src/promnesia:${PPATH}
 VOLUME /user_data

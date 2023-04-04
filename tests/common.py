@@ -2,6 +2,7 @@ import os
 import sys
 from functools import wraps
 from pathlib import Path
+from typing import Iterator
 
 from promnesia.common import _is_windows
 
@@ -64,7 +65,7 @@ def promnesia_bin(*args):
     # whatever...
     if under_ci() or _is_windows:
         # should be able to use the installed version
-        return ['promnesia', *args]
+        return [sys.executable, '-m', 'promnesia', *args]
     else:
         # use version from the repository
         root = Path(__file__).parent.parent
@@ -78,3 +79,22 @@ def throw(x: Any) -> NoReturn:
     like raise, but can be an expression...
     '''
     raise RuntimeError(x)
+
+
+def reset_hpi_modules() -> None:
+    '''
+    A hack to 'unload' HPI modules, otherwise some modules might cache the config
+    TODO: a bit crap, need a better way..
+    '''
+    import sys
+    import re
+    to_unload = [m for m in sys.modules if re.match(r'my[.]?', m)]
+    for m in to_unload:
+        del sys.modules[m]
+
+
+@contextmanager
+def local_http_server(path: Path, *, port: int) -> Iterator[str]:
+    address = '127.0.0.1'
+    with tmp_popen([sys.executable, '-m', 'http.server', '--directory', path, '--bind', address, str(port)]) as popen:
+        yield f'http://{address}:{port}'

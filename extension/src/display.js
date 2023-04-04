@@ -38,7 +38,7 @@ const HTML_MARKER = '!html ';
 type CssClass = string
 export function asClass(x: string): CssClass {
     // todo meh. too much trouble to fix properly...
-    const res = x.replace(/[^0-9a-z_-]/, '_')
+    const res = x.replace(/\s/g, '');
     return res.length == 0 ? 'bad_class' : res
 }
 
@@ -52,7 +52,7 @@ export class Binder {
         this.options = options
     }
 
-    makeChild(parent: HTMLElement, name: string, classes: ?Array<CssClass> = null) {
+    makeChild(parent: HTMLElement, name: string, classes: ?Array<CssClass> = null): HTMLElement {
         const res = this.doc.createElement(name);
         if (classes != null) {
             for (const cls of classes) {
@@ -63,7 +63,7 @@ export class Binder {
         return res;
     }
 
-    makeTchild(parent: HTMLElement, text: string) {
+    makeTchild(parent: HTMLElement, text: string): Text {
         const res = this.doc.createTextNode(text);
         parent.appendChild(res);
         return res;
@@ -72,8 +72,10 @@ export class Binder {
     async renderError(
         parent: HTMLElement,
         error: Error,
-    ) {
+    ): Promise<void> {
+        // $FlowFixMe[method-unbinding]
         const child  = this.makeChild .bind(this)
+        // $FlowFixMe[method-unbinding]
         const tchild = this.makeTchild.bind(this)
 
         const item = child(parent, 'li', ['error'])
@@ -96,9 +98,11 @@ export class Binder {
             locator,
             relative,
         }: Params,
-    ) {
+    ): Promise<HTMLElement> {
         // todo ugh. looks like Flow can't guess the type of closure that we get by .bind...
+        // $FlowFixMe[method-unbinding]
         const child = this.makeChild.bind(this);
+        // $FlowFixMe[method-unbinding]
         const tchild = this.makeTchild.bind(this); // TODO still necessary??
 
         const item = child(parent, 'li', relative ? ['relative'] : []);
@@ -110,7 +114,7 @@ export class Binder {
         const dt_c = child(header, 'span', ['datetime']);
         const time_c = child(dt_c, 'span', ['time']);
         const date_c = child(dt_c, 'span', ['date']);
-        item.setAttribute('data-sources', tags.join(' '));
+        item.setAttribute('data-sources', asClass(tags.join(' ')));
 
         const child_link = child(relative_c, 'a');
         // ugh. not sure why opening in new tab doesn't work :(
@@ -126,7 +130,7 @@ export class Binder {
         }
         for (const tag of tags) {
             const tag_c = child(tags_c, 'span', ['src', asClass(tag)]);
-            tchild(tag_c, tag);
+            tchild(tag_c, asClass(tag));
         }
         tchild(date_c, dates);
 
@@ -158,22 +162,24 @@ export class Binder {
             let handle_plain = do_simple
 
             if (this.options.sidebar_detect_urls) {
-                let anchorme = null
+                // ugh. this method triggers this issue during web-ext lint
+                // presumably because web-ext doesn't like querying chrome.runtime.getURL
+                // reported here https://github.com/mozilla/addons-linter/issues/4686
                 // NOTE: import might fail on some pages, e.g. twitter.com. so needs to be defensive
-                try {
-                    // note: performance is OK
-                    // 339 iterations passed, took  200  ms -- and it's counting other DOM operations as well
-                    const {default: anchorme_} = await import(
-                        /* webpackChunkName: "anchorme" */
-                        // $FlowFixMe
-                        'anchorme/dist/browser/anchorme.js' // TODO use min.js? slightly smaller
-                    )
-                    anchorme = anchorme_ // ugh. scope works odd..
-                } catch (err) {
-                    console.error(err)
-                    console.warn("promnesia: couldn't import anchorme. Fallback on plaintext")
-                }
-                if (anchorme != null) {
+                // upd: actually not sure if import on twitter page is really an issue anymore? seems to work...
+                // try {
+                //     // NOTE: anchorme.js needs to be in web_accessible_resources for this to work
+                //     // $FlowFixMe[unsupported-syntax]
+                //     await import (/* webpackIgnore: true */ chrome.runtime.getURL('anchorme.js'))
+                //     // this sets window.promnesia_anchorme -- see webpack.config.js
+                // } catch (err) {
+                //     console.error(err)
+                //     console.warn("[promnesia] couldn't import anchorme. Fallback on plaintext")
+                // }
+                // note: performance is OK
+                // 339 iterations passed, took  200  ms -- and it's counting other DOM operations as well
+                if (window.promnesia_anchorme != null) {
+                    const anchorme = window.promnesia_anchorme.default
                     handle_plain = (text: string) => {
                         try {
                             const res = unwrap(anchorme)(text)

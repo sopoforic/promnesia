@@ -15,6 +15,7 @@ export opaque type NaiveDate: Date = Date;
 
 export function unwrap<T>(x: ?T): T {
     if (x == null) {
+        console.trace("undefined or null")  // print trace as well, so it's easier to find out what was null
         throw new Error("undefined or null!")
     }
     return x
@@ -68,6 +69,7 @@ export class Visit {
     // ugh..
     toJObject(): any {
         const o = {}
+        // $FlowFixMe[prop-missing]
         Object.assign(o, this)
         // $FlowFixMe
         o.time     = o.time    .getTime()
@@ -81,6 +83,7 @@ export class Visit {
         o.dt_local = new Date(o.dt_local)
         // $FlowFixMe
         const v = new Visit()
+        // $FlowFixMe[prop-missing]
         Object.assign(v, o)
         return v
     }
@@ -142,7 +145,10 @@ export class Visits {
     // NOTE: JSON.stringify will use this method
     toJObject(): any {
         const o = {}
+        // $FlowFixMe[prop-missing]
         Object.assign(o, this)
+        // $FlowFixMe[prop-missing]
+        // $FlowFixMe[incompatible-use]
         o.visits = o.visits.map(v => {
             return (v instanceof Visit)
                 ? v.toJObject()
@@ -153,6 +159,7 @@ export class Visits {
     }
 
     static fromJObject(o: any): Visits {
+        // $FlowFixMe[prop-missing]
         o.visits = o.visits.map(x => {
             const err = x.error
             if (err != null) {
@@ -164,8 +171,10 @@ export class Visits {
                 return Visit.fromJObject(x)
             }
         })
+        // $FlowFixMe[prop-missing]
         // $FlowFixMe
         const r = new Visits()
+        // $FlowFixMe[prop-missing]
         Object.assign(r, o)
         return r
     }
@@ -188,6 +197,7 @@ export const Methods = {
     MARK_VISITED        : 'markVisited',
     OPEN_SEARCH         : 'openSearch',
     SIDEBAR_TOGGLE      : 'sidebarToggle',
+    // TODO not used
     SIDEBAR_SHOW        : 'sidebarShow',
     ZAPPER_EXCLUDELIST  : 'zapperExcludelist',
 }
@@ -199,11 +209,13 @@ export const Ids = {
 
 export type SearchPageParams = {
     // TODO allow passing iso string??
-    utc_timestamp_s?: string
+    utc_timestamp_s?: string,
+    // Query string
+    q?: string
 }
 
 // $FlowFixMe
-export function log() {
+export function log(): void {
     const args = [];
     for (var i = 1; i < arguments.length; i++) {
         const arg = arguments[i];
@@ -217,13 +229,13 @@ export function asList(bl: string): Array<string> {
     return bl.split(/\n/).filter(s => s.length > 0);
 }
 
-export function addStyle(doc: Document, css: string) {
+export function addStyle(doc: Document, css: string): void {
     const st = doc.createElement('style');
     st.appendChild(doc.createTextNode(css));
     unwrap(doc.head).appendChild(st);
 }
 
-export function safeSetInnerHTML(element: HTMLElement, html: string) {
+export function safeSetInnerHTML(element: HTMLElement, html: string): void {
     const tags = new DOMParser()
           .parseFromString(html, 'text/html')
           .getElementsByTagName('body')[0]
@@ -269,4 +281,63 @@ export function* chunkBy<T>(it: Iterable<T>, count: number): Iterator<Array<T>> 
     if (group.length > 0) {
         yield group
     }
+}
+
+export type HttpResponse = {
+    headers: any,
+    ok: boolean,
+    statusText: string,
+    text: () => Promise<string>,
+}
+
+export function rejectIfHttpError(response: HttpResponse): HttpResponse {
+    if (!response.ok) {
+        throw Error(response.statusText)
+    } else {
+        return response
+    }
+}
+
+// todo ugh, need to use some proper type annotations?
+// $FlowFixMe[missing-local-annot]
+function fetch_typed(...args): Promise<HttpResponse> {
+    // $FlowFixMe
+    return fetch(...args)
+}
+
+export async function fetch_max_stale(url: string, {max_stale}: {max_stale: number}): Promise<HttpResponse> {
+    /* In Firefox, Cache-Control allows max-stale param,
+     * which forces the browser to return cached responses past max-age (controlled by server).
+     * see https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Cache-Control#max-stale
+     * However, it's not supported for most browsers :(
+     * https://github.com/web-platform-tests/wpt/blob/4e0796bcd669c3caf123d5a8f4a2d9acf9e12393/fetch/http-cache/cc-request.any.js#L57
+     * https://wpt.fyi/results/fetch/http-cache/cc-request.any.html?label=experimental&label=master&aligned
+     * If it was, this function would be as simple as fetch(url, {'Cache-Control': 'max-stale=...'})
+     */
+
+    // if it's not cached, it will make a real request
+    // anso works offline (returns cached response with no errors)
+    const cached_resp = await fetch_typed(url, {cache: 'force-cache'}).then(rejectIfHttpError)
+    const expires = cached_resp.headers.get('expires')
+    // not sure if it's possible not to have 'expires'
+    const stale_ms = new Date() - new Date(expires == null ? 0 : expires)
+    const max_stale_ms = max_stale * 1000
+    if (stale_ms < max_stale_ms) {
+        return cached_resp
+    } else {
+        // do a regular request instead
+        return fetch_typed(url).then(rejectIfHttpError)
+    }
+}
+
+
+// useful for debugging
+export function uuid(): string {
+    return URL.createObjectURL(new Blob([])).substr(-36)
+}
+
+
+export function getOrDefault<T>(obj: any, key: string, def: T): T {
+    const res = obj[key];
+    return res === undefined ? def : res;
 }

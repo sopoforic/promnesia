@@ -52,7 +52,7 @@ I'm not against it, but with limited time resources full-scale tests give better
    : ./build --firefox # you can also use --chrome
    :         --lint    # [optional], run webext linter
    :         --release # [optional], build in the release mode (with optimizations)
-   :         --publish # [optional], release to the Chrome Web Store/Mozilla addons
+   :         --publish listed # [optional], release to the Chrome Web Store/Mozilla addons
 
    You'll find the result in =dist/=. After that, you can load it in your browser and develop.
 
@@ -76,6 +76,10 @@ You can also run them via tox:
 
 : TOX_TESTENV_PASSENV='DISPLAY HOME' tox -e end2end -- -s -k 'test_blacklist_custom[firefox]'
 
+- it's useful to pass =--pdb= to pytest, so you don't have to restart webdriver all over
+- after initial run, it's best pass =--skip-pkg-install= to tox to speedup repetitive test runs
+- when you're in development/debugging process, perhaps best to run the firefox version of tests -- Chrome has a 5-ish seconds lag after installing the extension
+
 * Releasing
 ** AMO (addons.mozilla.org)
 
@@ -96,6 +100,8 @@ For build instructions, you can point the reviewers at [[file:addons-mozilla-org
 : ./build --chrome  --lint --release --publish
 
 This command should work in theory and upload automatically... however getting the api keys is super annoying (see [[https://github.com/DrewML/chrome-webstore-upload/blob/master/How%20to%20generate%20Google%20API%20keys.md][this]]).
+
+NOTE: even after succcessful upload, seems that you still need to go to "Privacy practices" tab and click "Submit for review".
 
 Also it might still fail anyway, and require you to justify permissions etc..
 If you only release the extension once in a while maybe simpler to [[https://chrome.google.com/webstore/developer/dashboard][upload the zip manually]] :shrug:

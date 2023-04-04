@@ -1,22 +1,22 @@
 /* @flow */
-import {Visits, Visit, unwrap, format_duration, Methods, addStyle, Ids} from './common'
+import {Visits, Visit, unwrap, format_duration, Methods, addStyle, Ids, uuid, getOrDefault} from './common'
 import type {Second} from './common'
 import {getOptions, USE_ORIGINAL_TZ, GROUP_CONSECUTIVE_SECONDS} from './options';
 import type {Options} from './options';
 import {Binder, _fmt, asClass} from './display';
 import {defensify} from './notifications';
-import {achrome} from './async_chrome'
 
 // TODO how to prevent sidebar hiding on click??
 
-// TODO move to common?
-function get_or_default(obj, key, def) {
-    const res = obj[key];
-    return res === undefined ? def : res;
-}
+const UUID = uuid()
 
-
-const SIDEBAR_ID   = 'promnesia-sidebar';
+const PROMNESIA_FRAME_ID   = 'promnesia-frame';
+const PROMNESIA_CLASS   = 'promnesia';
+const SIDEBAR_ID = 'promnesia-sidebar';
+const HEADER_ID = 'promnesia-sidebar-header';
+const FILTERS_ID = 'promnesia-sidebar-filters';
+const FILTERS_CLASS = 'src-filter';
+const TOOLBAR_ID = 'promnesia-sidebar-toolbar';
 const CONTAINER_ID = 'promnesia-sidebar-container';
 
 
@@ -30,7 +30,7 @@ const Cls = {
 }
 
 
-const SIDEBAR_ACTIVE = 'promnesia';
+const SIDEBAR_ACTIVE = 'promnesia-sidebar-active';
 
 const doc = document;
 
@@ -44,16 +44,21 @@ class Sidebar {
         this.opts = opts;
     }
 
+    async getFiltersEl(): Promise<HTMLElement> {
+        const frame = await this.ensureFrame();
+        return unwrap(frame.contentDocument.getElementById(FILTERS_ID));
+    }
+
     async getContainer(): Promise<HTMLElement> {
         const frame = await this.ensureFrame();
         return unwrap(frame.contentDocument.getElementById(CONTAINER_ID));
     }
 
-    setupFrame(frame) {
+    setupFrame(frame: HTMLIFrameElement): void {
         const cdoc = frame.contentDocument;
         const head = unwrap(cdoc.head);
 
-        const sidebar_css = chrome.extension.getURL("sidebar.css");
+        const sidebar_css = chrome.runtime.getURL("sidebar.css")
         const link = cdoc.createElement("link");
         link.href = sidebar_css;
         link.type = "text/css";
@@ -61,6 +66,14 @@ class Sidebar {
         head.appendChild(link);
 
         addStyle(cdoc, this.opts.position_css);
+        // ugh. this is fucking horrible. hack to add default --right: 1 if it's not defined anywhere...
+        // I spent hours trying to implement it on pure css via vars/calc -- but didn't manage
+        {
+            const values = ['--right', '--left', '--top', '--bottom']
+            if (values.every(v => getComputedStyle(frame).getPropertyValue(v) == null)) {
+                frame.style.setProperty('--right', '1')
+            }
+        }
 
         // make links open in new tab instead of iframe https://stackoverflow.com/a/2656798/706389
         const base = cdoc.createElement('base');
@@ -68,39 +81,58 @@ class Sidebar {
         head.appendChild(base);
 
         const cbody = unwrap(cdoc.body);
-        // TODO not sure if it should be same as SIDEBAR_ACTIVE thing?
-        cbody.classList.add('promnesia');
+        cbody.classList.add(PROMNESIA_CLASS);
         // it's a bit hacky.. but stuff inside and outside iframe got different namespace, so ok to reuse id?
         // makes it much easier for settings
         cbody.id = SIDEBAR_ID;
+        cbody.setAttribute('uuid', UUID)
+		const sidebar_header = cdoc.createElement('div');
+        sidebar_header.id = HEADER_ID;
+        const sidebar_toolbar = cdoc.createElement('div');
+        sidebar_toolbar.id = TOOLBAR_ID;
+        sidebar_header.appendChild(sidebar_toolbar);
+        const sidebar_filters = cdoc.createElement('div');
+        sidebar_filters.id = FILTERS_ID;
+        sidebar_filters.classList.add(FILTERS_CLASS);
+        sidebar_header.appendChild(sidebar_filters);
         {
-            const show_dots_button = cdoc.createElement('button');
-            show_dots_button.appendChild(cdoc.createTextNode('Mark visited'));
+            const mark_visited_button = cdoc.createElement('button');
+            mark_visited_button.classList.add('button');
+            mark_visited_button.id = 'button-mark';
+            mark_visited_button.appendChild(cdoc.createTextNode('👁 Mark visited'));
             // TODO hmm. not sure if defensify is gonna work from here? no access to notifications api?
-            show_dots_button.addEventListener('click', defensify(async () => {
-                await achrome.runtime.sendMessage({method: Methods.MARK_VISITED});
+            mark_visited_button.addEventListener('click', defensify(async () => {
+                mark_visited_button.classList.toggle('active');
+                await browser.runtime.sendMessage({method: Methods.MARK_VISITED});
             }, 'mark_visited.onClick'));
             // TODO maybe highlight or just use custom class for that?
-            show_dots_button.title = "Mark visited links on the current page with dots";
-            cbody.appendChild(show_dots_button);
+            mark_visited_button.title = "Mark visited links on the current";
+            sidebar_toolbar.appendChild(mark_visited_button);
         }
         {
-            const searchb = cdoc.createElement('button');
-            searchb.appendChild(cdoc.createTextNode('Search'));
-            searchb.addEventListener('click', defensify(async () => {
-                await achrome.runtime.sendMessage({method: Methods.OPEN_SEARCH});
+            const search_button = cdoc.createElement('button');
+            search_button.classList.add('button');
+            search_button.id = 'button-search';
+            search_button.appendChild(cdoc.createTextNode('🔎 Search'));
+            search_button.addEventListener('click', defensify(async () => {
+                await browser.runtime.sendMessage({method: Methods.OPEN_SEARCH});
             }, 'open_search.onClick'));
-            cbody.appendChild(searchb);
+			search_button.title = "Search links in database";
+            sidebar_toolbar.appendChild(search_button);
         }
         {
             // TODO only on mobile?
-            const elem = cdoc.createElement('button');
-            elem.appendChild(cdoc.createTextNode('Close'));
-            elem.addEventListener('click', defensify(async () => {
+            const close_button = cdoc.createElement('button');
+			close_button.classList.add('button');
+            close_button.id = 'button-close';
+            close_button.appendChild(cdoc.createTextNode('✖'));
+            close_button.addEventListener('click', defensify(async () => {
                 await this.hide();
             }, 'close_sidebar.onClick'));
-            cbody.appendChild(elem);
+			close_button.title = "Close sidebar";
+            sidebar_toolbar.appendChild(close_button);
         }
+		cbody.appendChild(sidebar_header);
         /*
         {
             const hb = cdoc.createElement('button');
@@ -114,7 +146,7 @@ class Sidebar {
         cbody.appendChild(ccc);
     }
 
-    async clear() {
+    async clearContainer() {
         // TODO not sure if that's even necessary?
         const cont = await this.getContainer();
         while (cont.firstChild) {
@@ -152,7 +184,7 @@ class Sidebar {
     }
 
     getFrame(): ?HTMLIFrameElement {
-        return ((doc.getElementById(SIDEBAR_ID): any): ?HTMLIFrameElement);
+        return ((doc.getElementById(PROMNESIA_FRAME_ID): any): ?HTMLIFrameElement);
     }
 
     async ensureFrame(): Promise<HTMLIFrameElement> {
@@ -161,17 +193,27 @@ class Sidebar {
             return frame;
         }
 
-        const sidebar = doc.createElement('iframe'); this.body.appendChild(sidebar);
-        sidebar.src = '';
-        sidebar.id = SIDEBAR_ID;
-        sidebar.classList.add(SIDEBAR_ACTIVE);
-
+        const sidebar = doc.createElement('iframe')
+        sidebar.style.display = 'none' // prevent flickering while iframe is being initialised
+        const isFirefox = window.navigator.userAgent.indexOf('Firefox') != -1
+        if (isFirefox) {
+            // under firefox, if src is set after appendChild, it ceases to be bfcache friendly for some reason
+            // i.e. sidebar doesn't persist back/fwd navigation
+            // however, it only reproduced under regular firefox -- doesn't matter under webdriver. odd
+            sidebar.src = ''
+            this.body.appendChild(sidebar)
+        } else {
+            // BUT: under chrome if src is set before appendChild, it just doesn't display anything?? ugh
+            this.body.appendChild(sidebar)
+            sidebar.src = ''
+        }
 
         // TODO ugh it's a bit ridiculous that because of single iframe I have to propagate async everywhere..
         const loadPromise = new Promise((resolve, /*reject*/) => {
             // TODO not sure if there is anything to reject?..
             sidebar.addEventListener('load', () => {resolve();}, {once: true});
         });
+        // todo add timeout to make it a bit easier to debug?
         await loadPromise;
 
         this.setupFrame(sidebar);
@@ -186,8 +228,9 @@ class Sidebar {
         // unless there is some sort of race condition?
         // requestVisits();
 
-
-        return sidebar;
+        // "publish" the frame, so other components can get it by that id
+        sidebar.id = PROMNESIA_FRAME_ID
+        return sidebar
     }
 
 }
@@ -259,6 +302,7 @@ function _highlight(text: string, idx: number, v: Visit) {
     for (let [line, target] of findMatches(unwrap(doc.body), lines)) {
         // https://developer.mozilla.org/en-US/docs/Web/API/Node/nodeType#Node_type_constants
         while (target != null && target.nodeType != Node.ELEMENT_NODE) {
+            // $FlowFixMe[incompatible-type]
             target = target.parentElement
         }
 
@@ -274,6 +318,13 @@ function _highlight(text: string, idx: number, v: Visit) {
 
         if (target.classList.contains('toastify')) {
             // hacky.. to avoid a race condition when toast notification is shown
+            continue
+        }
+
+        if (target.classList.contains('promnesia-visited-popup-link')) {
+            // prevent highlight from being shown in tooltips
+            // hmm a bit crap, ideally would target promnesia-visited-popup
+            // but not sure how to get classes including parent classes??
             continue
         }
 
@@ -344,7 +395,10 @@ async function* _bindSidebarData(response: Visits) {
     const sidebar = new Sidebar(opts);
 
     const cont = await sidebar.getContainer();
-    await sidebar.clear(); // TODO probably, unnecessary?
+    const filtersEl = await sidebar.getFiltersEl();
+    // $FlowFixMe
+    filtersEl.replaceChildren();
+    await sidebar.clearContainer(); // TODO probably, unnecessary?
 
     // a way to ensure the sidebar rendering isn't impacting the browsing experience
     // TODO use the same logic in search?
@@ -367,8 +421,6 @@ async function* _bindSidebarData(response: Visits) {
     //
 
     const binder = new Binder(doc, opts)
-
-    const all_tags_c = binder.makeChild(cont, 'div', ['src-filter']);
     const items = binder.makeChild(cont, 'ul');
     items.id = Ids.VISITS
 
@@ -412,7 +464,7 @@ async function* _bindSidebarData(response: Visits) {
         }
     }
 
-    binder.makeTchild(all_tags_c, 'filter: ');
+    binder.makeTchild(filtersEl, 'Filter: ');
     for (let [tag, count] of [[null, with_ctx.length], ...Array.from(all_tags).sort()]) {
         let predicate: ((string) => boolean);
         if (tag === null) {
@@ -422,15 +474,29 @@ async function* _bindSidebarData(response: Visits) {
             tag = 'all';
             predicate = () => true;
         } else {
-            predicate = t => t == tag;
+            const tag_ = tag  // make Flow happy
+            predicate = t => t == asClass(tag_)
         }
 
         // TODO show total counts?
         // TODO if too many tags, just overlap on the seconds line
-        const tag_c = binder.makeChild(all_tags_c, 'span', ['src', asClass(tag)])
-        binder.makeTchild(tag_c, `${tag} (${count})`);
+        const tag_c = binder.makeChild(filtersEl, 'span', ['src', 'button', asClass(tag)])
+        const tag_c_name = binder.makeChild(tag_c, 'span', ['src-name'])
+        const tag_c_count = binder.makeChild(tag_c, 'span', ['src-count'])
+        binder.makeTchild(tag_c_name, `${asClass(tag)}`);
+        binder.makeTchild(tag_c_count, `${count}`);
         // TODO checkbox??
         tag_c.addEventListener('click', () => {
+            // set active status to filter buttons
+            // 1) reset status from all sources
+            filtersEl.childNodes.forEach(filter_element => {
+                if (filter_element.nodeType == Node.ELEMENT_NODE) {
+                    filter_element = ((filter_element: any): HTMLElement);
+                    filter_element.classList.remove('active');
+                }
+            });
+            // 2) set active to clicked source
+            tag_c.classList.add('active');
             for (const x of items.children) {
                 const sources = unwrap(x.dataset['sources']).split(' ');
                 const found = sources.some(predicate);
@@ -519,8 +585,8 @@ async function* _bindSidebarData(response: Visits) {
                 total_dur += v.duration;
             }
             for (const tag of v.tags) {
-                const mapped_tag = get_or_default(tag_map, tag, tag);
-                tset.add(mapped_tag);
+                const mapped_tag = getOrDefault(tag_map, tag, tag)
+                tset.add(mapped_tag)
             }
         }
         const tags = [...tset].sort();
@@ -551,11 +617,11 @@ async function bindSidebarData(response: Visits) {
 }
 
 
-
 // TODO ugh, it actually seems to erase all the class information :( is it due to message passing??
+// todo hmm this isn't used??
 // eslint-disable-next-line no-unused-vars
 function requestVisits(): void {
-    achrome.runtime.sendMessage({method: Methods.GET_SIDEBAR_VISITS})
+    browser.runtime.sendMessage({method: Methods.GET_SIDEBAR_VISITS})
            .then((response: {}) => {
                if (response == null) {
                    // todo why would it be?
@@ -566,8 +632,7 @@ function requestVisits(): void {
 }
 
 
-// eslint-disable-next-line no-unused-vars
-chrome.runtime.onMessage.addListener((msg: any, sender: chrome$MessageSender) => {
+const onMessageListener = (msg: any, _: chrome$MessageSender) => {
     const method = msg.method
     if        (method == Methods.BIND_SIDEBAR_VISITS) {
         bindSidebarData(Visits.fromJObject(msg.data))
@@ -577,7 +642,17 @@ chrome.runtime.onMessage.addListener((msg: any, sender: chrome$MessageSender) =>
         sidebar().then(s => s.toggle())
     }
     // todo do I need to return anything?
-})
+}
+
+
+// this is necessary because due to data races it's possible for sidebar.js to be injected twice in the page
+if (window.promnesia_haslistener == null) {
+    window.promnesia_haslistener = true
+    console.debug(`[promnesia] [sidebar-${UUID}] registering callbacks`)
+    chrome.runtime.onMessage.addListener(onMessageListener)
+} else {
+    console.debug(`[promnesia] [sidebar-${UUID}] skipping callback registration, they are already present`)
+}
 
 // TODO make configurable? or resizable?
 
